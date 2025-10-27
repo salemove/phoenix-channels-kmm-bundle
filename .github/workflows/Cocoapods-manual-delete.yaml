@@ -1,0 +1,54 @@
+name: CocoaPods manual delete
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version in semantic versioning format (i.e. 1.0.2)"
+        required: true
+
+concurrency:
+  group: cocoapods-manual-delete-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cocoapods:
+    name: Remove from CocoaPods
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Git authentication
+        run: |
+          echo "machine github.com login x-access-token password ${{ secrets.GITHUB_TOKEN }}" > ~/.netrc
+          chmod 600 ~/.netrc
+
+      - name: Delete from CocoaPods trunk
+        env:
+          COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          POD_NAME="PhoenixChannelsClient"
+
+          echo "Processing ${POD_NAME} version ${VERSION}..."
+
+          # Check if this pod version exists on CocoaPods
+          if pod trunk info "${POD_NAME}" 2>&1 | grep -F " - ${VERSION} (" >/dev/null; then
+            echo "Attempting to remove '${POD_NAME}' version '${VERSION}' from CocoaPods trunk..."
+
+          # Attempt to remove the version from trunk (non-interactive confirm)
+          if printf "y\n" | pod trunk delete "${POD_NAME}" "${VERSION}"; then
+              echo "Successfully removed '${POD_NAME}' version '${VERSION}' from trunk."
+            else
+              echo "::error::Failed to remove '${POD_NAME}' version '${VERSION}' from trunk."
+              exit 1
+            fi
+
+          else
+            echo "::warning::'${POD_NAME}' version '${VERSION}' does not exist on CocoaPods. Skipping removal."
+          fi

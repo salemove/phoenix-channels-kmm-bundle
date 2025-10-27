@@ -1,0 +1,124 @@
+name: Pull request merge
+
+on:
+    pull_request:
+        types:
+            - closed
+        branches:
+            - master
+
+permissions:
+    contents: write
+
+concurrency:
+    group: pull-request-merge-${{ github.event.pull_request.number }}
+    cancel-in-progress: true
+
+jobs:
+    create_tag_and_release:
+        name: Create tag and release after merge
+        runs-on: macos-15
+        if: >-
+            github.event.pull_request.merged == true &&
+            startsWith(github.event.pull_request.head.ref, 'Release/')
+        outputs:
+            version: ${{ steps.version.outputs.version }}
+        env:
+            HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        steps:
+            - name: Extract semantic version from branch name
+              id: version
+              run: |
+                  version=$(echo "$HEAD_REF" | sed 's/^Release\///')
+                  echo "version=$version" >> $GITHUB_OUTPUT
+
+            - name: Checkout repository (merge commit)
+              uses: actions/checkout@v5
+              with:
+                  fetch-depth: 0
+
+            - name: Check if tag already exists
+              id: tag_check
+              env:
+                  VERSION: ${{ steps.version.outputs.version }}
+              run: |
+                  if git rev-parse "refs/tags/$VERSION" >/dev/null 2>&1; then
+                      echo "Tag already exists! Aborting..."
+                      exit 1
+                  else
+                      echo "exists=false" >> $GITHUB_OUTPUT
+                  fi
+
+            - name: Extract last commit description
+              id: commit
+              run: |
+                  commit_description=$(git log -1 --pretty=format:"%B" | tail -n +2)
+                  {
+                  echo "changelog<<EOF"
+                  echo "$commit_description"
+                  echo "EOF"
+                  } >> "$GITHUB_OUTPUT"
+
+            - name: Zip xcframework
+              id: zip_xcframework
+              run: |
+                  set -euo pipefail
+                  XCFRAMEWORK_PATH="PhoenixChannelsClient.xcframework"
+                  if [ ! -d "$XCFRAMEWORK_PATH" ]; then
+                    echo "Error: '$XCFRAMEWORK_PATH' not found at repo root. Ensure the xcframework exists on the merged branch." >&2
+                    exit 1
+                  fi
+                  ZIP_NAME="PhoenixChannelsClient.xcframework.zip"
+                  rm -f "$ZIP_NAME"
+                  zip -r "$ZIP_NAME" "$XCFRAMEWORK_PATH" > /dev/null
+                  echo "zip_path=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+
+            - name: Create GitHub release
+              if: steps.tag_check.outputs.exists == 'false'
+              uses: ncipollo/release-action@v1.18.0
+              with:
+                  tag: "${{ steps.version.outputs.version }}"
+                  body: |
+                      ## What's Changed:
+                      ${{ steps.commit.outputs.changelog }}
+                  artifacts: |
+                      PhoenixChannelsClient.xcframework.zip
+                  generateReleaseNotes: false
+
+    cocoapods:
+        name: Publish to CocoaPods
+        needs: create_tag_and_release
+        runs-on: macos-15
+        permissions:
+            contents: read
+        steps:
+            - uses: actions/checkout@v5 # v5.0.0
+
+            - name: Set up Git authentication
+              run: |
+                  echo "machine github.com login x-access-token password ${{ secrets.GITHUB_TOKEN }}" > ~/.netrc
+                  chmod 600 ~/.netrc
+
+            - name: Publish to CocoaPods trunk
+              env:
+                  COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
+                  VERSION: ${{ needs.create_tag_and_release.outputs.version }}
+              run: |
+                  POD_NAME="PhoenixChannelsClient"
+
+                  echo "Processing ${POD_NAME} version ${VERSION}..."
+
+                  # Check if this pod version already exists on CocoaPods
+                  if pod trunk info "${POD_NAME}" 2>&1 | grep -F " - ${VERSION} (" >/dev/null; then
+                    echo "::warning::'${POD_NAME}' version '${VERSION}' already exists. Skipping."
+                    exit 0
+                  fi
+
+                  # If not, attempt to publish it
+                  echo "Publishing '${POD_NAME}'..."
+                  if pod trunk push "${POD_NAME}.podspec" --allow-warnings --synchronous --skip-import-validation; then
+                    echo "Successfully published '${POD_NAME}' version '${VERSION}'!"
+                  else
+                    echo "::error::Failed to publish '${POD_NAME}' version '${VERSION}'."
+                    exit 1
+                  fi
