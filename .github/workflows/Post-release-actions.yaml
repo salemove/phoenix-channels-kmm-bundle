@@ -1,0 +1,207 @@
+name: Post-release actions
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 1.2.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  SOURCE_REPO: ${{ github.repository }}
+
+jobs:
+  build-metadata:
+    name: Download asset and compute sha256
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.tag }}
+      sha256: ${{ steps.hash.outputs.sha256 }}
+    steps:
+      - name: Prepare metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          echo "asset_name=GliaOpenTelemetry.xcframework.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Download release asset
+        id: download
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag}}
+          ASSET_NAME: ${{ steps.meta.outputs.asset_name}}
+          SRC_REPO: ${{ env.SOURCE_REPO }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          # Download by exact name or pattern
+          gh release download "$TAG" \
+            --repo "$SRC_REPO" \
+            --pattern "$ASSET_NAME" \
+            --dir artifact
+          FILE_COUNT=$(ls -1 artifact | wc -l | tr -d ' ')
+          if [ "$FILE_COUNT" -ne 1 ]; then
+            echo "Expected exactly one asset matching '$ASSET_NAME', found $FILE_COUNT" >&2
+            ls -l artifact >&2 || true
+            exit 1
+          fi
+          ASSET_PATH="artifact/$(ls -1 artifact)"
+          echo "asset_path=$ASSET_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate SHA-256 hash
+        id: hash
+        env:
+          FILE: ${{ steps.download.outputs.asset_path }}
+        run: |
+          set -euo pipefail
+          test -f "$FILE"
+          SHASUM=$(sha256sum "$FILE" | awk '{print $1}')
+          echo "sha256=$SHASUM" >> "$GITHUB_OUTPUT"
+          echo "Computed sha256: $SHASUM"
+
+  create-prs:
+    name: Create update PRs in target repos
+    needs: build-metadata
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - repo: salemove/ios-sdk
+            base_branch: development
+            updates:
+              - file: GliaCoreSDK/templates/Package.swift
+                version_regex: >
+                  (\s*url\s*:\s*".*?/releases/download/)[^/]+(/GliaOpenTelemetry\.xcframework\.zip".*)
+                checksum_regex: >
+                  (GliaOpenTelemetry\.xcframework\.zip",\s*\n+\s*checksum:\s*")[^"]+("\s*)
+              - file: GliaCoreSDK/templates/GliaCoreSDK.podspec
+                version_regex: >
+                  (\s*s\.dependency\s+'GliaOpenTelemetry',\s*')[0-9]+\.[0-9]+\.[0-9]+('.*)
+                checksum_regex: "" 
+              - file: GliaCoreSDK.sources.podspec
+                version_regex: >
+                  (\s*s\.dependency\s+'GliaOpenTelemetry',\s*')[0-9]+\.[0-9]+\.[0-9]+('.*)
+                checksum_regex: ""
+              - file: GliaCoreSDK.xcframework.podspec
+                version_regex: >
+                  (\s*s\.dependency\s+'GliaOpenTelemetry',\s*')[0-9]+\.[0-9]+\.[0-9]+('.*)
+                checksum_regex: ""
+            commit_message: "chore: bump GliaOpenTelemetry to ${{ needs.build-metadata.outputs.version }}"
+            pr_title: "Bump telemetry to ${{ needs.build-metadata.outputs.version }}"
+            pr_body: |
+              Version: ${{ needs.build-metadata.outputs.version }}
+              SHA256:  ${{ needs.build-metadata.outputs.sha256 }}
+          - repo: salemove/ios-sdk-widgets
+            base_branch: development
+            updates:
+              - file: templates/Package.swift
+                version_regex: >
+                  (\s*url\s*:\s*".*?/releases/download/)[^/]+(/GliaOpenTelemetry\.xcframework\.zip".*)
+                checksum_regex: >
+                  (GliaOpenTelemetry\.xcframework\.zip",\s*\n+\s*checksum:\s*")[^"]+("\s*)
+              - file: Package.swift
+                version_regex: >
+                  (\s*url\s*:\s*".*?/releases/download/)[^/]+(/GliaOpenTelemetry\.xcframework\.zip".*)
+                checksum_regex: >
+                  (GliaOpenTelemetry\.xcframework\.zip",\s*\n+\s*checksum:\s*")[^"]+("\s*)
+            commit_message: "chore: bump GliaOpenTelemetry to ${{ needs.build-metadata.outputs.version }}"
+            pr_title: "Bump telemetry to ${{ needs.build-metadata.outputs.version }}"
+            pr_body: |
+              - version -> ${{ needs.build-metadata.outputs.version }}
+              - sha256  -> ${{ needs.build-metadata.outputs.sha256 }}
+
+    steps:
+      - name: Parse repo name
+        id: parse_repo
+        run: |
+          REPO_NAME=$(echo "${{ matrix.repo }}" | cut -d'/' -f2)
+          echo "repo_name=$REPO_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.parse_repo.outputs.repo_name }}
+
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.base_branch }}
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Create update branch
+        id: branch
+        run: |
+          set -euo pipefail
+          VERSION='${{ needs.build-metadata.outputs.version }}'
+          BRANCH="chore/telemetry-${VERSION}"
+          git checkout -b "$BRANCH"
+          echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Update version and sha256 in files
+        env:
+          UPDATES_JSON: ${{ toJson(matrix.updates) }}
+          VERSION: ${{ needs.build-metadata.outputs.version }}
+          SHA256: ${{ needs.build-metadata.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          echo "$UPDATES_JSON" > updates.json
+          jq -c '.[]' updates.json | while read -r item; do
+            FILE=$(echo "$item" | jq -r '.file')
+            VERSION_REGEX=$(echo "$item" | jq -r '.version_regex')
+            CHECKSUM_REGEX=$(echo "$item" | jq -r '.checksum_regex')
+
+            test -f "$FILE" || { echo "File not found: $FILE" >&2; exit 1; }
+
+            # Update version (sed with extended regex; keep groups 1 and 3, insert $VERSION)
+            sed -i -E "s|${VERSION_REGEX}|\1${VERSION}\2|g" "$FILE" 
+
+            # Update checksum only if CHECKSUM_REGEX is not empty
+            if [ -n "$CHECKSUM_REGEX" ]; then
+              sed -i -E "s|${CHECKSUM_REGEX}|\1${SHA256}\2|g" "$FILE"
+            fi
+
+            echo "Updated $FILE"
+          done
+          git status --porcelain
+
+      - name: Commit changes
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit. Skipping PR."
+            echo "skip_pr=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "${{ matrix.commit_message }}"
+          git push --set-upstream origin HEAD
+
+      - name: Create Pull Request
+        if: success()
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+          commit-message: ${{ matrix.commit_message }}
+          title: ${{ matrix.pr_title }}
+          body: ${{ matrix.pr_body }}
+          branch: ${{ steps.branch.outputs.name }}
+          base: ${{ matrix.base_branch }}
+
+      - name: PR URLs
+        if: success()
+        run: |
+          echo "Opened PR for ${{ matrix.repo }} on branch ${{ steps.branch.outputs.name }}"
