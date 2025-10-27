@@ -1,0 +1,53 @@
+name: CocoaPods manual push
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version in semantic versioning format (i.e. 1.0.2)"
+        required: true
+
+concurrency:
+  group: cocoapods-manual-push-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cocoapods:
+    name: Publish to CocoaPods
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Git authentication
+        run: |
+          echo "machine github.com login x-access-token password ${{ secrets.GITHUB_TOKEN }}" > ~/.netrc
+          chmod 600 ~/.netrc
+
+      - name: Publish to CocoaPods trunk
+        env:
+          COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          POD_NAME="GliaOpenTelemetry"
+
+          echo "Processing ${POD_NAME} version ${VERSION}..."
+
+          # Check if this pod version already exists on CocoaPods
+          if pod trunk info "${POD_NAME}" 2>&1 | grep -F " - ${VERSION} (" >/dev/null; then
+            echo "::warning::'${POD_NAME}' version '${VERSION}' already exists. Skipping."
+            exit 0
+          fi
+
+          # If not, attempt to publish it
+          echo "Publishing '${POD_NAME}'..."
+          if pod trunk push "${POD_NAME}.podspec" --allow-warnings --synchronous --skip-import-validation; then
+            echo "Successfully published '${POD_NAME}' version '${VERSION}'!"
+          else
+            echo "::error::Failed to publish '${POD_NAME}' version '${VERSION}'."
+            exit 1
+          fi
