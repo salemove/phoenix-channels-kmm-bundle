@@ -94,7 +94,7 @@ jobs:
                   (\s*s\.dependency\s+'PhoenixChannelsClient',\s*')[0-9]+\.[0-9]+\.[0-9]+('.*)
                 checksum_regex: ""
             commit_message: "chore: bump PhoenixChannelsClient to ${{ needs.build-metadata.outputs.version }}"
-            pr_title: "Bump telemetry to ${{ needs.build-metadata.outputs.version }}"
+            pr_title: "Bump PhoenixChannelsClient to ${{ needs.build-metadata.outputs.version }}"
             pr_body: |
               Version: ${{ needs.build-metadata.outputs.version }}
               SHA256:  ${{ needs.build-metadata.outputs.sha256 }}
@@ -112,7 +112,7 @@ jobs:
                 checksum_regex: >
                   (PhoenixChannelsClient\.xcframework\.zip",\s*\n+\s*checksum:\s*")[^"]+("\s*)
             commit_message: "chore: bump PhoenixChannelsClient to ${{ needs.build-metadata.outputs.version }}"
-            pr_title: "Bump telemetry to ${{ needs.build-metadata.outputs.version }}"
+            pr_title: "Bump PhoenixChannelClient to ${{ needs.build-metadata.outputs.version }}"
             pr_body: |
               - version -> ${{ needs.build-metadata.outputs.version }}
               - sha256  -> ${{ needs.build-metadata.outputs.sha256 }}
@@ -145,7 +145,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION='${{ needs.build-metadata.outputs.version }}'
-          BRANCH="chore/telemetry-${VERSION}"
+          BRANCH="chore/phoenix-channels-client-${VERSION}"
           git checkout -b "$BRANCH"
           echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
 
