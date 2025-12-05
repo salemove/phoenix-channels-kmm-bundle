@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
     s.name         = 'PhoenixChannelsClient'
-    s.version      = '1.0.1'
+    s.version      = '1.1.1'
     s.summary      = 'Glia Phoenix Channels Client'
     s.description  = 'The Glia Phoenix Channels KMM client'
     s.homepage     = 'https://github.com/salemove/ios-bundle'
@@ -29,7 +29,7 @@ Pod::Spec.new do |s|
     LICENSE
     }
     s.author       = 'Glia Technologies'
-    s.source       = { :http => 'https://github.com/salemove/phoenix-channels-kmm-bundle/releases/download/2.1.5/PhoenixChannelsClient.xcframework.zip' }
+    s.source       = { :http => 'https://github.com/salemove/phoenix-channels-kmm-bundle/releases/download/1.1.1/PhoenixChannelsClient.xcframework.zip' }
   
     s.module_name = 'PhoenixChannelsClient'
     s.ios.deployment_target = "13.0"
