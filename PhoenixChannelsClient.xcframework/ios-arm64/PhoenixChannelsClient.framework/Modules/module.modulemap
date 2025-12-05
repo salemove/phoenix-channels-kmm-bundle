@@ -1,0 +1,8 @@
+framework module "PhoenixChannelsClient" {
+    umbrella header "PhoenixChannelsClient.h"
+
+    export *
+    module * { export * }
+
+    use Foundation
+}
