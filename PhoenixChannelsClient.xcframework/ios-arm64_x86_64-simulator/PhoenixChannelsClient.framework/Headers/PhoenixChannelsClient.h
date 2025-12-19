@@ -569,6 +569,11 @@ __attribute__((swift_name("Socket")))
 
 /**
  * Connects to the Phoenix server.
+ *
+ * This function will do the following based on the current state:
+ * - If the socket is already connected or is in the process of connecting, it will return without doing anything.
+ * - If the socket is disconnected, it will attempt to establish a new connection.
+ * - If the socket is in the process of reconnecting, it will reset current re-connection timer and create a new session.
  */
 - (void)connect __attribute__((swift_name("connect()")));
 
@@ -591,6 +596,12 @@ __attribute__((swift_name("Socket")))
  * Sets the connection open callback.
  */
 - (void)onOpenCallback:(void (^)(void))callback __attribute__((swift_name("onOpen(callback:)")));
+
+/**
+ * Reconnects to the Phoenix server.
+ * * Calling this function will terminate all ongoing processes, preserve existing channels, and attempt to re-establish the connection to the server.
+ */
+- (void)reConnect __attribute__((swift_name("reConnect()")));
 
 /**
  * Releases all the resources related to the [channel]
