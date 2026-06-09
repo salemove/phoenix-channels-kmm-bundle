@@ -207,6 +207,46 @@ __attribute__((swift_name("Channel")))
 @required
 
 /**
+ * Registers a callback to be invoked when the channel reaches the terminal CLOSED state.
+ *
+ * Fires for any terminal transition: server phx_close, successful leave, leave timeout,
+ * socket closed, force close, or join rejection by the server.
+ *
+ * CLOSED is terminal — once closed the channel cannot rejoin. If the channel is already
+ * CLOSED at registration time, the callback fires immediately with the cached close payload.
+ *
+ * @param callback The callback to invoke on the terminal CLOSED transition.
+ * @return A unique reference for [removeOnClose].
+ */
+- (NSString *)addOnCloseCallback:(void (^)(NSString * _Nullable))callback __attribute__((swift_name("addOnClose(callback:)")));
+
+/**
+ * Registers a callback to be invoked on any channel error:
+ * join timeout, socket error, phx_error, duplicate join call, join rejection, leave timeout.
+ *
+ * For terminal errors (join rejection, leave timeout) the channel also transitions to CLOSED,
+ * so any callbacks registered via [addOnClose] will fire as well — this callback surfaces the
+ * error reason, and [addOnClose] signals termination.
+ *
+ * Does NOT replay past errors. Use [isErrored] to check current state instead.
+ *
+ * @param callback The callback to invoke on errors.
+ * @return A unique reference for [removeOnError].
+ */
+- (NSString *)addOnErrorCallback:(void (^)(id<PCCChannelError>))callback __attribute__((swift_name("addOnError(callback:)")));
+
+/**
+ * Registers a callback to be invoked every time the channel transitions to JOINED,
+ * including automatic rejoins after socket reconnect or join timeout recovery.
+ *
+ * If the channel is currently JOINED at registration time, the callback fires immediately.
+ *
+ * @param callback The callback to invoke on JOINED transitions.
+ * @return A unique reference for [removeOnJoined].
+ */
+- (NSString *)addOnJoinedCallback:(void (^)(void))callback __attribute__((swift_name("addOnJoined(callback:)")));
+
+/**
  * Joins the channel, subscribing the client to the topic on the server.
  * implementation of [join] with [SocketConfiguration.responseTimeoutMs] timeout.
  *
@@ -227,7 +267,7 @@ __attribute__((swift_name("Channel")))
  * Leaves the channel, unsubscribing the client from the topic on the server.
  * implementation of [leave] with [SocketConfiguration.responseTimeoutMs] timeout.
  *
- * Triggers onClose callback.
+ * Triggers registered [addOnClose] callbacks.
  */
 - (void)leave __attribute__((swift_name("leave()")));
 
@@ -264,23 +304,6 @@ __attribute__((swift_name("Channel")))
 - (NSString *)onEvent:(PCCEvent *)event onEvent:(void (^)(NSString *))onEvent __attribute__((swift_name("on(event:onEvent:)")));
 
 /**
- * Sets the channel close(leave) callback.
- * Will be called when the channel is closed by the server or left by the client.
- */
-- (void)onCloseCallback:(void (^)(NSString * _Nullable))callback __attribute__((swift_name("onClose(callback:)")));
-
-/**
- * Sets the channel error callback.
- * Timeout during join, leave, or any other error.
- */
-- (void)onErrorCallback:(void (^)(id<PCCChannelError>))callback __attribute__((swift_name("onError(callback:)")));
-
-/**
- * Sets the channel open(join) callback.
- */
-- (void)onOpenCallback:(void (^)(void))callback __attribute__((swift_name("onOpen(callback:)")));
-
-/**
  * Pushes a message to the server on this channel.
  * implementation of [push] with [SocketConfiguration.responseTimeoutMs] timeout.
  *
@@ -297,6 +320,27 @@ __attribute__((swift_name("Channel")))
  * @param builder The configuration builder for the push.
  */
 - (void)pushEvent:(PCCEvent *)event payloadJson:(NSString *)payloadJson builder:(void (^)(id<PCCPushConfigurationBuilder>))builder __attribute__((swift_name("push(event:payloadJson:builder:)")));
+
+/**
+ * Unregisters a callback previously registered with [addOnClose].
+ *
+ * @param ref The reference returned by [addOnClose].
+ */
+- (void)removeOnCloseRef:(NSString *)ref __attribute__((swift_name("removeOnClose(ref:)")));
+
+/**
+ * Unregisters a callback previously registered with [addOnError].
+ *
+ * @param ref The reference returned by [addOnError].
+ */
+- (void)removeOnErrorRef:(NSString *)ref __attribute__((swift_name("removeOnError(ref:)")));
+
+/**
+ * Unregisters a callback previously registered with [addOnJoined].
+ *
+ * @param ref The reference returned by [addOnJoined].
+ */
+- (void)removeOnJoinedRef:(NSString *)ref __attribute__((swift_name("removeOnJoined(ref:)")));
 
 /**
  * Indicates whether the channel is currently closed or left.
@@ -519,7 +563,7 @@ __attribute__((swift_name("PushConfigurationBuilder")))
  * Sets the callback to be called when the push fails
  * This callback will be called when the timeout happens
  */
-- (void)onErrorCallback_:(void (^)(id<PCCPushError>))callback __attribute__((swift_name("onError(callback_:)")));
+- (void)onErrorCallback:(void (^)(id<PCCPushError>))callback __attribute__((swift_name("onError(callback:)")));
 
 /**
  * Sets the callback to be called when the push is successful
@@ -585,12 +629,12 @@ __attribute__((swift_name("Socket")))
 /**
  * Sets the connection close callback.
  */
-- (void)onCloseCallback_:(void (^)(void))callback __attribute__((swift_name("onClose(callback_:)")));
+- (void)onCloseCallback:(void (^)(void))callback __attribute__((swift_name("onClose(callback:)")));
 
 /**
  * Sets the connection error callback.
  */
-- (void)onErrorCallback__:(void (^)(id<PCCSocketError>))callback __attribute__((swift_name("onError(callback__:)")));
+- (void)onErrorCallback_:(void (^)(id<PCCSocketError>))callback __attribute__((swift_name("onError(callback_:)")));
 
 /**
  * Sets the connection open callback.
