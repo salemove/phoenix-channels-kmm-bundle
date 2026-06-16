@@ -212,8 +212,14 @@ __attribute__((swift_name("Channel")))
  * Fires for any terminal transition: server phx_close, successful leave, leave timeout,
  * socket closed, force close, or join rejection by the server.
  *
- * CLOSED is terminal — once closed the channel cannot rejoin. If the channel is already
- * CLOSED at registration time, the callback fires immediately with the cached close payload.
+ * CLOSED is terminal — once closed the channel cannot rejoin. It fires at most once per
+ * channel lifecycle and is never followed by [addOnJoined]/onJoined. If the channel is
+ * already CLOSED at registration time, the callback fires immediately with the cached close
+ * payload.
+ *
+ * Transient socket disruptions with automatic recovery (e.g. an abnormal/1006 server close
+ * or a dropped connection) do NOT close the channel and do NOT invoke this callback; they
+ * surface via [addOnError]/onError only while the socket reconnects and the channel rejoins.
  *
  * @param callback The callback to invoke on the terminal CLOSED transition.
  * @return A unique reference for [removeOnClose].
@@ -388,6 +394,19 @@ __attribute__((swift_name("ChannelConfigurationBuilder")))
 - (void)payloadPayload:(NSString *)payload __attribute__((swift_name("payload(payload:)")));
 
 /**
+ * Sets whether a server-rejected join (a `phx_reply` with status `"error"`) should auto-rejoin
+ * with backoff instead of terminating the channel.
+ *
+ * Defaults to `true`, matching phoenix.js: a join error moves the channel to the errored state
+ * and the iterative rejoin loop keeps retrying with backoff indefinitely. A later successful
+ * join reply recovers the channel (transitions to joined and flushes queued pushes). Set to
+ * `false` to restore terminal behaviour (the channel is closed and released, both `onError` and
+ * `onClose` fire) for deterministic rejections such as "unauthorized"; call `leave()` to escape
+ * the retry state while the default policy is in effect.
+ */
+- (void)rejoinOnJoinErrorEnabled:(BOOL)enabled __attribute__((swift_name("rejoinOnJoinError(enabled:)")));
+
+/**
  * Sets the response timeout in milliseconds for join - `phx_join` and leave - `phx_leave` events.
  */
 - (void)timeoutMsTimeoutMs:(int64_t)timeoutMs __attribute__((swift_name("timeoutMs(timeoutMs:)")));
@@ -500,6 +519,7 @@ __attribute__((swift_name("ChannelErrorReason")))
 @property (class, readonly) PCCChannelErrorReason *leaveTimeout __attribute__((swift_name("leaveTimeout")));
 @property (class, readonly) PCCChannelErrorReason *socketError __attribute__((swift_name("socketError")));
 @property (class, readonly) PCCChannelErrorReason *error __attribute__((swift_name("error")));
+@property (class, readonly) PCCChannelErrorReason *joinRejected __attribute__((swift_name("joinRejected")));
 @property (class, readonly) PCCChannelErrorReason *duplicateJoinCall __attribute__((swift_name("duplicateJoinCall")));
 + (PCCKotlinArray<PCCChannelErrorReason *> *)values __attribute__((swift_name("values()")));
 @property (class, readonly) NSArray<PCCChannelErrorReason *> *entries __attribute__((swift_name("entries")));
@@ -628,6 +648,15 @@ __attribute__((swift_name("Socket")))
 
 /**
  * Sets the connection close callback.
+ *
+ * This is the terminal close callback: it fires at most once per socket lifecycle and is
+ * never followed by [onOpen]. It signals a definitive shutdown — either a client-initiated
+ * [disconnect] or a clean server close (WebSocket code 1000 / NORMAL, e.g. an intentional
+ * server-side disconnect after token revocation).
+ *
+ * Transient disruptions with automatic recovery — abnormal server closes (e.g. 1006/1011),
+ * dropped connections, heartbeat timeouts — do NOT invoke this callback; they surface via
+ * [onError] only while the socket reconnects in the background.
  */
 - (void)onCloseCallback:(void (^)(void))callback __attribute__((swift_name("onClose(callback:)")));
 
