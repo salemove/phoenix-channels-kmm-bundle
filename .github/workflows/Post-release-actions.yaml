@@ -1,6 +1,8 @@
 name: Post-release actions
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       version:
@@ -27,7 +29,7 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ inputs.version || github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
           echo "asset_name=PhoenixChannelsClient.xcframework.zip" >> "$GITHUB_OUTPUT"
 
       - name: Download release asset
@@ -76,23 +78,11 @@ jobs:
           - repo: salemove/ios-sdk
             base_branch: development
             updates:
-              - file: GliaCoreSDK/templates/Package.swift
+              - file: Dependencies/Package.swift
                 version_regex: >
                   (\s*url\s*:\s*".*?/releases/download/)[^/]+(/PhoenixChannelsClient\.xcframework\.zip".*)
                 checksum_regex: >
                   (PhoenixChannelsClient\.xcframework\.zip",\s*\n+\s*checksum:\s*")[^"]+("\s*)
-              - file: GliaCoreSDK/templates/GliaCoreSDK.podspec
-                version_regex: >
-                  (\s*s\.dependency\s+'PhoenixChannelsClient',\s*')[0-9]+\.[0-9]+\.[0-9]+('.*)
-                checksum_regex: "" 
-              - file: GliaCoreSDK.sources.podspec
-                version_regex: >
-                  (\s*s\.dependency\s+'PhoenixChannelsClient',\s*')[0-9]+\.[0-9]+\.[0-9]+('.*)
-                checksum_regex: ""
-              - file: GliaCoreSDK.xcframework.podspec
-                version_regex: >
-                  (\s*s\.dependency\s+'PhoenixChannelsClient',\s*')[0-9]+\.[0-9]+\.[0-9]+('.*)
-                checksum_regex: ""
             commit_message: "chore: bump PhoenixChannelsClient to ${{ needs.build-metadata.outputs.version }}"
             pr_title: "Bump PhoenixChannelsClient to ${{ needs.build-metadata.outputs.version }}"
             pr_body: |
@@ -164,12 +154,14 @@ jobs:
 
             test -f "$FILE" || { echo "File not found: $FILE" >&2; exit 1; }
 
-            # Update version (sed with extended regex; keep groups 1 and 3, insert $VERSION)
-            sed -i -E "s|${VERSION_REGEX}|\1${VERSION}\2|g" "$FILE" 
+            # perl in slurp mode rather than sed: the checksum pattern spans the
+            # newline between the url and checksum lines, which sed cannot match
+            # because it processes input one line at a time.
+            perl -0777 -i -pe "s|${VERSION_REGEX}|\${1}${VERSION}\${2}|g" "$FILE"
 
             # Update checksum only if CHECKSUM_REGEX is not empty
             if [ -n "$CHECKSUM_REGEX" ]; then
-              sed -i -E "s|${CHECKSUM_REGEX}|\1${SHA256}\2|g" "$FILE"
+              perl -0777 -i -pe "s|${CHECKSUM_REGEX}|\${1}${SHA256}\${2}|g" "$FILE"
             fi
 
             echo "Updated $FILE"
