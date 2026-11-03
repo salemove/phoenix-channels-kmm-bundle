@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   create-pull-request:
@@ -16,6 +15,13 @@ jobs:
     env:
       GITHUB_REF: ${{ github.ref_name == '' && '' || github.ref_name }}
     steps:
+      - name: Generate PR bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.PR_BOT_APP_ID }}
+          private-key: ${{ secrets.PR_BOT_PRIVATE_KEY }}
+
       - name: Extract semantic version
         id: version
         run: |
@@ -47,7 +53,7 @@ jobs:
 
       - name: Create pull request
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           HEAD: "Release/${{ steps.version.outputs.version }}"
           TITLE: "Release/${{ steps.version.outputs.version }}"
           BASE: master
