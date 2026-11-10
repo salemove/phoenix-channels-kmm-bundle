@@ -48,13 +48,13 @@ jobs:
             --repo "$SRC_REPO" \
             --pattern "$ASSET_NAME" \
             --dir artifact
-          FILE_COUNT=$(ls -1 artifact | wc -l | tr -d ' ')
+          FILE_COUNT=$(find artifact -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')
           if [ "$FILE_COUNT" -ne 1 ]; then
             echo "Expected exactly one asset matching '$ASSET_NAME', found $FILE_COUNT" >&2
             ls -l artifact >&2 || true
             exit 1
           fi
-          ASSET_PATH="artifact/$(ls -1 artifact)"
+          ASSET_PATH=$(find artifact -mindepth 1 -maxdepth 1 -type f)
           echo "asset_path=$ASSET_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Calculate SHA-256 hash
@@ -72,8 +72,9 @@ jobs:
     name: Create update PRs in target repos
     needs: build-metadata
     runs-on: ubuntu-latest
-    # All writes to the target repos use the GitHub App token, not GITHUB_TOKEN.
-    permissions: {}
+    # Cross-repo work uses the GitHub App token; GITHUB_TOKEN needs no extra scopes.
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -82,6 +83,11 @@ jobs:
             base_branch: development
             updates:
               - file: Dependencies/Package.swift
+                version_regex: >
+                  (\s*url\s*:\s*".*?/releases/download/)[^/]+(/PhoenixChannelsClient\.xcframework\.zip".*)
+                checksum_regex: >
+                  (PhoenixChannelsClient\.xcframework\.zip",\s*\n+\s*checksum:\s*")[^"]+("\s*)
+              - file: GliaCoreSDK/templates/Package.swift
                 version_regex: >
                   (\s*url\s*:\s*".*?/releases/download/)[^/]+(/PhoenixChannelsClient\.xcframework\.zip".*)
                 checksum_regex: >
@@ -105,7 +111,7 @@ jobs:
                 checksum_regex: >
                   (PhoenixChannelsClient\.xcframework\.zip",\s*\n+\s*checksum:\s*")[^"]+("\s*)
             commit_message: "chore: bump PhoenixChannelsClient to ${{ needs.build-metadata.outputs.version }}"
-            pr_title: "Bump PhoenixChannelClient to ${{ needs.build-metadata.outputs.version }}"
+            pr_title: "Bump PhoenixChannelsClient to ${{ needs.build-metadata.outputs.version }}"
             pr_body: |
               - version -> ${{ needs.build-metadata.outputs.version }}
               - sha256  -> ${{ needs.build-metadata.outputs.sha256 }}
@@ -149,13 +155,20 @@ jobs:
           SHA256: ${{ needs.build-metadata.outputs.sha256 }}
         run: |
           set -euo pipefail
-          echo "$UPDATES_JSON" > updates.json
-          jq -c '.[]' updates.json | while read -r item; do
+          UPDATED=0
+          # Process substitution instead of a pipe so UPDATED survives the loop;
+          # feed jq from the variable so no scratch file ends up in the consumer repo.
+          while read -r item; do
             FILE=$(echo "$item" | jq -r '.file')
             VERSION_REGEX=$(echo "$item" | jq -r '.version_regex')
             CHECKSUM_REGEX=$(echo "$item" | jq -r '.checksum_regex')
 
-            test -f "$FILE" || { echo "File not found: $FILE" >&2; exit 1; }
+            # A file may not exist (yet) in the target repo; skip it rather than
+            # failing the whole matrix entry.
+            if [ ! -f "$FILE" ]; then
+              echo "::warning::File not found, skipping: $FILE"
+              continue
+            fi
 
             # perl in slurp mode rather than sed: the checksum pattern spans the
             # newline between the url and checksum lines, which sed cannot match
@@ -167,11 +180,24 @@ jobs:
               perl -0777 -i -pe "s|${CHECKSUM_REGEX}|\${1}${SHA256}\${2}|g" "$FILE"
             fi
 
+            if git diff --quiet -- "$FILE"; then
+              echo "::warning::No changes in $FILE (regex did not match or version already current)"
+              continue
+            fi
+            UPDATED=$((UPDATED + 1))
             echo "Updated $FILE"
-          done
+          done < <(jq -c '.[]' <<< "$UPDATES_JSON")
+
+          if [ "$UPDATED" -eq 0 ]; then
+            echo "::error::None of the configured files exist in ${{ matrix.repo }}; nothing to update."
+            exit 1
+          fi
           git status --porcelain
 
       - name: Commit changes
+        id: commit
+        env:
+          BRANCH: ${{ steps.branch.outputs.name }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -183,20 +209,37 @@ jobs:
             exit 0
           fi
           git commit -m "${{ matrix.commit_message }}"
-          git push --set-upstream origin HEAD
+          # The chore/phoenix-channels-client-<version> branch is owned by this automation, so a stale copy from an earlier run is safe to overwrite.
+          # Fetch it first: the shallow checkout has no remote-tracking ref for it, and
+          # --force-with-lease rejects the push as "stale info" without one.
+          git fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" || true
+          git push --force-with-lease --set-upstream origin HEAD
+          echo "skip_pr=false" >> "$GITHUB_OUTPUT"
 
-      - name: Create Pull Request
-        if: success()
-        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6.1.0
-        with:
-          token: ${{ steps.generate_token.outputs.token }}
-          commit-message: ${{ matrix.commit_message }}
-          title: ${{ matrix.pr_title }}
-          body: ${{ matrix.pr_body }}
-          branch: ${{ steps.branch.outputs.name }}
-          base: ${{ matrix.base_branch }}
-
-      - name: PR URLs
-        if: success()
+      - name: Create pull request
+        if: steps.commit.outputs.skip_pr != 'true'
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+          REPO: ${{ matrix.repo }}
+          HEAD: ${{ steps.branch.outputs.name }}
+          BASE: ${{ matrix.base_branch }}
+          TITLE: ${{ matrix.pr_title }}
+          BODY: ${{ matrix.pr_body }}
         run: |
-          echo "Opened PR for ${{ matrix.repo }} on branch ${{ steps.branch.outputs.name }}"
+          set -euo pipefail
+          existing=$(gh pr list --repo "$REPO" --base "$BASE" --head "$HEAD" --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            echo "PR #$existing already exists for $HEAD"
+            exit 0
+          fi
+          gh pr create --repo "$REPO" --base "$BASE" --head "$HEAD" --title "$TITLE" --body "$BODY"
+
+      - name: PR URL
+        if: steps.commit.outputs.skip_pr != 'true'
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+          REPO: ${{ matrix.repo }}
+          HEAD: ${{ steps.branch.outputs.name }}
+        run: |
+          set -euo pipefail
+          gh pr view --repo "$REPO" "$HEAD" --json url --jq .url

@@ -19,7 +19,8 @@ jobs:
         name: Create tag and release after merge
         runs-on: macos-15
         permissions:
-            contents: write
+            contents: write # create tag and GitHub release
+            actions: write # dispatch Post-release-actions.yaml
         if: >-
             github.event.pull_request.merged == true &&
             startsWith(github.event.pull_request.head.ref, 'Release/')
@@ -32,7 +33,7 @@ jobs:
               id: version
               run: |
                   version=$(echo "$HEAD_REF" | sed 's/^Release\///')
-                  echo "version=$version" >> $GITHUB_OUTPUT
+                  echo "version=$version" >> "$GITHUB_OUTPUT"
 
             - name: Checkout repository (merge commit)
               uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -48,7 +49,7 @@ jobs:
                       echo "Tag already exists! Aborting..."
                       exit 1
                   else
-                      echo "exists=false" >> $GITHUB_OUTPUT
+                      echo "exists=false" >> "$GITHUB_OUTPUT"
                   fi
 
             - name: Extract last commit description
@@ -86,3 +87,16 @@ jobs:
                   artifacts: |
                       PhoenixChannelsClient.xcframework.zip
                   generateReleaseNotes: false
+
+            - name: Run post-release actions
+              # The release above is created with GITHUB_TOKEN, and GitHub does not
+              # start workflows for events produced with that token, so the
+              # `release: published` trigger in Post-release-actions.yaml never fires
+              # for it. Dispatch the workflow explicitly instead.
+              if: steps.tag_check.outputs.exists == 'false'
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  VERSION: ${{ steps.version.outputs.version }}
+              run: |
+                  set -euo pipefail
+                  gh workflow run Post-release-actions.yaml --ref master -f version="${VERSION}"
