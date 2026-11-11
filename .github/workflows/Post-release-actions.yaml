@@ -9,8 +9,7 @@ on:
         type: string
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 env:
   SOURCE_REPO: ${{ github.repository }}
@@ -19,6 +18,8 @@ jobs:
   build-metadata:
     name: Download asset and compute sha256
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.meta.outputs.tag }}
       sha256: ${{ steps.hash.outputs.sha256 }}
@@ -69,6 +70,8 @@ jobs:
     name: Create update PRs in target repos
     needs: build-metadata
     runs-on: ubuntu-latest
+    # All writes to the target repos use the GitHub App token, not GITHUB_TOKEN.
+    permissions: {}
     strategy:
       fail-fast: false
       matrix:
@@ -126,7 +129,7 @@ jobs:
 
       - name: Generate token
         id: generate_token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -134,7 +137,7 @@ jobs:
           repositories: ${{ steps.parse_repo.outputs.repo_name }}
 
       - name: Checkout target repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ matrix.repo }}
           ref: ${{ matrix.base_branch }}
@@ -192,7 +195,7 @@ jobs:
 
       - name: Create Pull Request
         if: success()
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6.1.0
         with:
           token: ${{ steps.generate_token.outputs.token }}
           commit-message: ${{ matrix.commit_message }}
