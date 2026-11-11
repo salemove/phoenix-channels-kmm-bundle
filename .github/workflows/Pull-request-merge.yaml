@@ -19,7 +19,8 @@ jobs:
         name: Create tag and release after merge
         runs-on: macos-15
         permissions:
-            contents: write
+            contents: write # create tag and GitHub release
+            actions: write # dispatch Post-release-actions.yaml
         if: >-
             github.event.pull_request.merged == true &&
             startsWith(github.event.pull_request.head.ref, 'Release/')
@@ -32,7 +33,7 @@ jobs:
               id: version
               run: |
                   version=$(echo "$HEAD_REF" | sed 's/^Release\///')
-                  echo "version=$version" >> $GITHUB_OUTPUT
+                  echo "version=$version" >> "$GITHUB_OUTPUT"
 
             - name: Checkout repository (merge commit)
               uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -48,7 +49,7 @@ jobs:
                       echo "Tag already exists! Aborting..."
                       exit 1
                   else
-                      echo "exists=false" >> $GITHUB_OUTPUT
+                      echo "exists=false" >> "$GITHUB_OUTPUT"
                   fi
 
             - name: Extract last commit description
@@ -87,40 +88,15 @@ jobs:
                       PhoenixChannelsClient.xcframework.zip
                   generateReleaseNotes: false
 
-    cocoapods:
-        name: Publish to CocoaPods
-        needs: create_tag_and_release
-        runs-on: macos-15
-        permissions:
-            contents: read
-        steps:
-            - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-
-            - name: Set up Git authentication
-              run: |
-                  echo "machine github.com login x-access-token password ${{ secrets.GITHUB_TOKEN }}" > ~/.netrc
-                  chmod 600 ~/.netrc
-
-            - name: Publish to CocoaPods trunk
+            - name: Run post-release actions
+              # The release above is created with GITHUB_TOKEN, and GitHub does not
+              # start workflows for events produced with that token, so the
+              # `release: published` trigger in Post-release-actions.yaml never fires
+              # for it. Dispatch the workflow explicitly instead.
+              if: steps.tag_check.outputs.exists == 'false'
               env:
-                  COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
-                  VERSION: ${{ needs.create_tag_and_release.outputs.version }}
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  VERSION: ${{ steps.version.outputs.version }}
               run: |
-                  POD_NAME="PhoenixChannelsClient"
-
-                  echo "Processing ${POD_NAME} version ${VERSION}..."
-
-                  # Check if this pod version already exists on CocoaPods
-                  if pod trunk info "${POD_NAME}" 2>&1 | grep -F " - ${VERSION} (" >/dev/null; then
-                    echo "::warning::'${POD_NAME}' version '${VERSION}' already exists. Skipping."
-                    exit 0
-                  fi
-
-                  # If not, attempt to publish it
-                  echo "Publishing '${POD_NAME}'..."
-                  if pod trunk push "${POD_NAME}.podspec" --allow-warnings --synchronous --skip-import-validation; then
-                    echo "Successfully published '${POD_NAME}' version '${VERSION}'!"
-                  else
-                    echo "::error::Failed to publish '${POD_NAME}' version '${VERSION}'."
-                    exit 1
-                  fi
+                  set -euo pipefail
+                  gh workflow run Post-release-actions.yaml --ref master -f version="${VERSION}"
